@@ -1,0 +1,212 @@
+services:
+  # ── Immich ──────────────────────────────────────────────────────
+  immich-redis:
+    image: redis:7-alpine
+    container_name: immich-redis
+    restart: unless-stopped
+    networks:
+      - media-net
+
+  immich-postgres:
+    image: tensorchord/pgvecto-rs:pg15-v0.3.0
+    container_name: immich-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${IMMICH_DB_PASSWORD}
+      POSTGRES_USER: immich
+      POSTGRES_DB: immich
+    volumes:
+      - ./immich/postgres:/var/lib/postgresql/data
+    networks:
+      - media-net
+
+  immich-server:
+    # Pinned: v3.x dropped pgvecto.rs; DB uses the `vectors` extension. v2.7.5 is the last 2.x (pgvecto.rs-compatible) release.
+    image: ghcr.io/immich-app/immich-server:v2.7.5
+    container_name: immich-server
+    restart: unless-stopped
+    depends_on:
+      - immich-redis
+      - immich-postgres
+    volumes:
+      - ${UPLOAD_LOCATION}:/usr/src/app/upload
+      - ./immich/model-cache:/usr/src/app/model-cache:rw
+    environment:
+      - DB_HOSTNAME=immich-postgres
+      - DB_USERNAME=immich
+      - DB_PASSWORD=${IMMICH_DB_PASSWORD}
+      - DB_DATABASE_NAME=immich
+      - REDIS_HOSTNAME=immich-redis
+      - IMMICH_SERVER_URL=https://${IMMICH_DOMAIN}
+      - IMMICH_MACHINE_LEARNING_URL=http://immich-machine-learning:3003
+    ports:
+      - 2283:2283
+    networks:
+      - media-net
+
+  immich-machine-learning:
+    # Pinned to match immich-server (must be the same version).
+    image: ghcr.io/immich-app/immich-machine-learning:v2.7.5
+    container_name: immich-machine-learning
+    restart: unless-stopped
+    depends_on:
+      - immich-server
+    volumes:
+      - ./immich/model-cache:/cache:rw
+    environment:
+      - DB_HOSTNAME=immich-postgres
+      - DB_USERNAME=immich
+      - DB_PASSWORD=${IMMICH_DB_PASSWORD}
+      - DB_DATABASE_NAME=immich
+      - REDIS_HOSTNAME=immich-redis
+      - IMMICH_SERVER_URL=https://${IMMICH_DOMAIN}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3003/ping', timeout=30)"]
+      interval: 60s
+      timeout: 35s
+      retries: 3
+      start_period: 120s
+    networks:
+      - media-net
+
+  # ── Plex ────────────────────────────────────────────────────────
+  plex:
+    image: plexinc/pms-docker
+    container_name: plex
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=UTC
+      - PLEX_CLAIM=${PLEX_CLAIM}
+      - ADVERTISE_IP=http://${HOST_IP}:32400
+    volumes:
+      - ./plex/config:/config
+      # Unified mergerfs pool — same view Radarr/Sonarr write to.
+      # Any future disk added to the pool is picked up automatically.
+      - {{MEDIA_POOL}}:/data/media:ro
+      - {{NEXTCLOUD_DATA}}:/data/nextcloud-data:ro
+
+  # ── Jellyfin ────────────────────────────────────────────────────
+  jellyfin:
+    image: jellyfin/jellyfin
+    container_name: jellyfin
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./jellyfin/config:/config
+      # Unified mergerfs pool (matches Plex + Radarr/Sonarr); future disks auto-included.
+      - {{MEDIA_POOL}}:/data/media:ro
+    environment:
+      - TZ=UTC
+    devices:
+      - /dev/dri:/dev/dri:ro
+
+  # ── Portainer ───────────────────────────────────────────────────
+  portainer:
+    image: portainer/portainer-ce
+    container_name: portainer
+    restart: unless-stopped
+    command: -H unix:///var/run/docker.sock --no-setup-token
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    ports:
+      - 9443:9443
+      - 9000:9000
+    networks:
+      - media-net
+
+  # ── Tugtainer (update tracker; replaced Watchtower 2026-07-03) ───
+  # Watchtower removed: auto-updating the mutable :release tag pulled Immich v3.0.1,
+  # which dropped pgvecto.rs and crash-looped against the existing DB.
+  # Tugtainer only CHECKS for updates by default (auto-update is off) and shows them
+  # in a web UI at http://<host>:9412 so updates are reviewed/applied manually.
+  tugtainer:
+    image: ghcr.io/quenary/tugtainer:1
+    container_name: tugtainer
+    restart: unless-stopped
+    environment:
+      - AGENT_SECRET=${TUGTAINER_AGENT_SECRET}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - tugtainer_data:/tugtainer
+    ports:
+      - 9412:80
+    networks:
+      - media-net
+
+  # ── WatchState ──────────────────────────────────────────────────
+  watchstate:
+    image: ghcr.io/arabcoders/watchstate:latest
+    container_name: watchstate
+    restart: unless-stopped
+    volumes:
+      - ./watchstate:/config
+    environment:
+      - TZ=UTC
+    ports:
+      - 8181:8080
+    networks:
+      - media-net
+
+  # ── Seerr (was Overseerr; migrated 2026-07-07) ──────────────────
+  overseerr:
+    image: ghcr.io/seerr-team/seerr:v3.3.0  # pinned — do not use :latest (v3 auto-migrated from Overseerr 1.35.0)
+    container_name: overseerr
+    restart: unless-stopped
+    init: true
+    environment:
+      - TZ=UTC
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    volumes:
+      - ./overseerr:/app/config
+    ports:
+      - 5055:5055
+    networks:
+      - media-net
+
+  # ── Caddy (reverse proxy behind the Cloudflare tunnel) ──────────
+  caddy:
+    build: ./caddy
+    container_name: caddy
+    restart: unless-stopped
+    environment:
+      - DUCKDNS_TOKEN=${DUCKDNS_TOKEN}
+    ports:
+      # Bound to localhost only, for on-box testing / Tailscale Funnel source.
+      - 127.0.0.1:8095:80
+      - 127.0.0.1:8097:81
+      # Public ports for the DuckDNS-fronted domains ({{DUCKDNS_DOMAIN_MEDIA}} / {{DUCKDNS_DOMAIN_PLEX}}),
+      # which bypass Cloudflare entirely and get their own Let's Encrypt certs.
+      # Pinned to the LAN IP rather than 0.0.0.0: tailscaled already holds 443
+      # on the tailscale interface ({{TAILSCALE_IP}}) for Funnel, and a wildcard
+      # bind here would collide with that specific-address bind.
+      - {{LAN_IP}}:80:80
+      - {{LAN_IP}}:443:443
+      - {{LAN_IP}}:443:443/udp
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.0.0.1
+      - 9.9.9.9
+      - 149.112.112.112
+      - 208.67.222.222
+      - 208.67.220.220
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - media-net
+
+networks:
+  media-net:
+
+volumes:
+  portainer_data:
+  caddy_data:
+  caddy_config:
+  tugtainer_data:

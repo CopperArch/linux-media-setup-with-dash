@@ -1,0 +1,59 @@
+# Example profile for linux-media-setup-with-dash.
+# Copy to my-profile.yaml, fill in, then:
+#   python3 install.py --cli --profile my-profile.yaml
+#
+# A profile carries your CHOICES, not installer logic. Secrets live here too
+# (chmod 600) — treat the file like a password, or leave secrets blank and
+# answer the prompts at install time instead.
+
+meta:
+  installer: linux-media-setup-with-dash
+
+user: yourname
+lan_ip: 192.168.1.50
+lan_cidr: 192.168.1.0/24
+host_ip: ""          # Plex advertise IP; blank = lan_ip
+
+domain: ""           # e.g. example.org (blank skips the public domains)
+jellyfin_public_url: ""
+nextcloud_domain: ""
+immich_domain: ""
+duckdns_domains: ""  # e.g. myname,mynameplex
+duckdns_token: ""
+
+media_pool: /mnt/storage
+nextcloud_data: /mnt/nextcloud-data
+media_disks: []      # extra mount paths to verify, e.g. [/mnt/server-disk1]
+
+vpn_provider: surfshark
+vpn_user: ""
+vpn_password: ""
+vpn_server_countries: Netherlands
+vpn_rotate_hourly: true
+
+use_media_stack: true
+use_vpn_stack: true
+use_dashboard: true
+use_daily_routine: true
+use_post_reboot_check: true
+use_duckdns: false
+use_wastebins: true
+use_alerts: false
+
+# secrets — blank fields are generated on a fresh install
+nc_db_password: ""
+nc_admin_password: ""
+immich_db_password: ""
+plex_claim: ""       # from plex.tv/claim
+tugtainer_secret: ""
+qbit_user: admin
+qbit_password: ""
+vnc_pw: ""
+openrouter_api_key: ""
+
+smtp_host: ""
+smtp_port: "587"
+smtp_user: ""
+smtp_pass: ""
+mail_from: ""
+mail_to: ""

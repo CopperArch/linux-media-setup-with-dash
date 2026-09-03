@@ -1,0 +1,78 @@
+# Caddy sits behind the Cloudflare tunnel:
+#   client -> Cloudflare edge -> cloudflared -> caddy:80 -> Jellyfin
+# TLS is terminated at the Cloudflare edge, so Caddy only needs plain HTTP here.
+{
+	admin off
+	# Trust the Cloudflare tunnel / docker network as the immediate upstream so
+	# X-Forwarded-* headers from cloudflared are honored.
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:80 {
+	# Jellyfin runs in host-network mode on the box's LAN IP.
+	reverse_proxy {{LAN_IP}}:8096
+
+	encode gzip
+	log {
+		output stdout
+		format console
+	}
+}
+
+# Plain-HTTP internal path for Plex, mirroring the :80 Jellyfin block above.
+# Used by Tailscale Funnel (via the 8097->81 port publish) so Plex gets the
+# same Caddy-fronted (gzip/logging) treatment as Jellyfin.
+:81 {
+	reverse_proxy {{LAN_IP}}:32400
+
+	encode gzip
+	log {
+		output stdout
+		format console
+	}
+}
+
+http://{{NEXTCLOUD_DOMAIN}} {
+	reverse_proxy {{LAN_IP}}:8090 {
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host {host}
+	}
+
+	encode gzip
+	log {
+		output stdout
+		format console
+	}
+}
+
+# Direct path, independent of Cloudflare: DuckDNS domain -> router port-forward
+# (external 1443 -> internal 443 -> this box; the ISP's hub reserves external
+# 80/443 for its own remote management, so Caddy proves domain ownership via
+# a DNS TXT record instead of the usual HTTP/TLS-ALPN challenges).
+{{DUCKDNS_DOMAIN_MEDIA}} {
+	tls {
+		dns duckdns {env.DUCKDNS_TOKEN}
+	}
+	reverse_proxy {{LAN_IP}}:8096
+
+	encode gzip
+	log {
+		output stdout
+		format console
+	}
+}
+
+{{DUCKDNS_DOMAIN_PLEX}} {
+	tls {
+		dns duckdns {env.DUCKDNS_TOKEN}
+	}
+	reverse_proxy {{LAN_IP}}:32400
+
+	encode gzip
+	log {
+		output stdout
+		format console
+	}
+}

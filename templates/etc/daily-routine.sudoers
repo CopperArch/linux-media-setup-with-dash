@@ -1,0 +1,9 @@
+# linux-media-setup: sudo rules for the nightly maintenance routine.
+# Scoped to exactly the commands daily-routine.sh runs; nothing else.
+{{DASH_USER}} ALL=(root) NOPASSWD: /usr/bin/apt-get update
+{{DASH_USER}} ALL=(root) NOPASSWD: /usr/bin/apt-get -y upgrade
+{{DASH_USER}} ALL=(root) NOPASSWD: /usr/bin/apt-get -y autoremove
+{{DASH_USER}} ALL=(root) NOPASSWD: /usr/bin/smartctl -H -A /dev/disk/by-id/*
+{{DASH_USER}} ALL=(root) NOPASSWD: /usr/bin/journalctl --vacuum-time=*
+{{DASH_USER}} ALL=(root) NOPASSWD: /usr/sbin/ufw status
+{{DASH_USER}} ALL=(root) NOPASSWD: /usr/local/sbin/docker-log-clean.sh

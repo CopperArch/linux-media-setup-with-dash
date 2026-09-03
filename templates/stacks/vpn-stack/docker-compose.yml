@@ -1,0 +1,167 @@
+services:
+  # ── Gluetun (VPN) ──────────────────────────────────────────────
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER}
+      - VPN_TYPE=${VPN_TYPE}
+      - OPENVPN_USER=${OPENVPN_USER}
+      - OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
+      - SERVER_COUNTRIES=${SERVER_COUNTRIES}
+      - TZ=UTC
+      - FIREWALL_INPUT_PORTS=7878,8989,9696  # allow Seerr (on media-net) to reach Radarr/Sonarr/Prowlarr in gluetun netns
+      - FIREWALL_OUTBOUND_SUBNETS={{LAN_CIDR}}  # let gluetun-netns containers (jellyseerr, sonarr, radarr...) reach LAN services like Jellyfin/Plex without going through the VPN tunnel
+    volumes:
+      - gluetun_data:/gluetun
+    ports:
+      - 6881:6881/tcp
+      - 6881:6881/udp
+      - 8080:8080/tcp
+      - 127.0.0.1:8989:8989
+      - 127.0.0.1:7878:7878
+      - 127.0.0.1:9696:9696
+      - 3000:6901  # KasmVNC Chrome (HTTPS on 6901 inside gluetun netns) -> https://<host>:3000
+      - 5056:5055  # jellyseerr web UI (shares gluetun netns; 5055 is Overseerr on the host)
+    networks:
+      - vpn-net
+      - media-stack_media-net
+
+  # ── qBittorrent ─────────────────────────────────────────────────
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    restart: unless-stopped
+    network_mode: service:gluetun
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - UMASK=002
+    volumes:
+      - qbittorrent_config:/config
+      - {{MEDIA_DISK2}}:/data/disk2:rw
+      - {{MEDIA_POOL}}:/data/media:rw
+
+  # ── Chrome (KasmVNC, VPN-only — manual torrent browsing) ────────
+  chrome:
+    image: kasm-chrome:1.16.0  # custom build (chrome-kasm/Dockerfile): renames login user kasm_user -> {{DASH_USER}}
+    # Built locally and never pushed to a registry, so a plain `compose pull`
+    # errors with "pull access denied" — and because pull runs concurrently that
+    # error aborts the whole command, leaving gluetun and flaresolverr showing
+    # "Interrupted" and silently NOT updated by the nightly routine. Marking it
+    # never-pull lets the other services in this stack pull normally.
+    pull_policy: never
+    build:
+      context: ./chrome-kasm
+    container_name: chrome
+    restart: unless-stopped
+    network_mode: service:gluetun    # routes through the VPN only
+    security_opt:
+      - seccomp:unconfined
+    shm_size: 2gb
+    environment:
+      - TZ=UTC
+      - VNC_PW=${VNC_PW}              # login: user '{{DASH_USER}}'
+    volumes:
+      - chrome_config:/home/kasm-user
+      - {{MEDIA_DISK2}}:/data/disk2:rw
+
+  # ── Sonarr ──────────────────────────────────────────────────────
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    restart: unless-stopped
+    network_mode: service:gluetun
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - UMASK=002
+    volumes:
+      - sonarr_config:/config
+      - {{MEDIA_DISK2}}:/data/disk2:rw
+      - {{MEDIA_DISK1}}:/data/disk1:rw
+      - {{MEDIA_DISK3}}:/data/disk3:rw
+      - {{MEDIA_POOL}}:/data/media:rw
+
+  # ── Radarr ──────────────────────────────────────────────────────
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    restart: unless-stopped
+    network_mode: service:gluetun
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - UMASK=002
+    volumes:
+      - radarr_config:/config
+      - {{MEDIA_DISK2}}:/data/disk2:rw
+      - {{MEDIA_DISK1}}:/data/disk1:rw
+      - {{MEDIA_DISK3}}:/data/disk3:rw
+      - {{MEDIA_POOL}}:/data/media:rw
+
+  # ── Prowlarr ────────────────────────────────────────────────────
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    network_mode: service:gluetun
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - UMASK=002
+    volumes:
+      - prowlarr_config:/config
+
+  # ── Seerr (successor to Jellyseerr/Overseerr; migrated 2026-07-07) ─
+  jellyseerr:
+    image: ghcr.io/seerr-team/seerr:v3.3.0  # pinned — do not use :latest (v3 auto-migrated from jellyseerr 2.7.3)
+    container_name: jellyseerr
+    restart: unless-stopped
+    network_mode: service:gluetun
+    init: true
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - UMASK=002
+    volumes:
+      - jellyseerr_config:/app/config
+
+  # ── Byparr (FlareSolverr replacement — solves current Cloudflare) ──
+  # Was ghcr.io/flaresolverr/flaresolverr:latest — that project is EOL (last
+  # release 2023) and can no longer solve Cloudflare's "Just a moment" Turnstile
+  # challenge (60s timeouts on 1337x/kickass). Byparr is an API-compatible
+  # drop-in (same :8191, same /v1 endpoint) built on SeleniumBase/nodriver.
+  # Service/container name kept as `flaresolverr` so the Prowlarr proxy
+  # (localhost:8191) and gluetun netns wiring need no change.
+  flaresolverr:
+    image: ghcr.io/thephaseless/byparr:2.1.0
+    container_name: flaresolverr
+    restart: unless-stopped
+    network_mode: service:gluetun
+    shm_size: 2gb
+    environment:
+      - LOG_LEVEL=info
+      - TZ=UTC
+
+networks:
+  vpn-net:
+  media-stack_media-net:
+    external: true
+
+volumes:
+  gluetun_data:
+  qbittorrent_config:
+  chrome_config:
+  sonarr_config:
+  radarr_config:
+  prowlarr_config:
+  jellyseerr_config:

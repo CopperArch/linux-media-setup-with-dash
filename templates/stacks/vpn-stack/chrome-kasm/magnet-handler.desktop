@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=qBittorrent Magnet Handler
+Exec=/usr/local/bin/magnet-to-qbt.sh %u
+NoDisplay=true
+Terminal=false
+MimeType=x-scheme-handler/magnet;

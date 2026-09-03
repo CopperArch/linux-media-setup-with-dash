@@ -1,0 +1,3 @@
+# linux-media-setup: docker log-rotation guard (called from daily-routine.sh)
+# scoped to the one root-owned helper — no general NOPASSWD granted here.
+ALL ALL=(root) NOPASSWD: /usr/local/sbin/docker-log-clean.sh

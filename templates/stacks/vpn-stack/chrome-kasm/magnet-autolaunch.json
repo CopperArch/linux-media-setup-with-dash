@@ -1,0 +1,9 @@
+{
+    "AutoLaunchProtocolsFromOrigins": [
+        {
+            "protocol": "magnet",
+            "allowed_origins": ["*"]
+        }
+    ],
+    "ExternalProtocolDialogShowAlwaysOpenCheckbox": true
+}

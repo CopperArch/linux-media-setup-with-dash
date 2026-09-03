@@ -1,0 +1,12 @@
+# profiles with real secrets never get committed
+my-profile*.yaml
+*.local.yaml
+profiles/my-*.yaml
+
+__pycache__/
+*.pyc
+.DS_Store
+
+# rendered output from test runs
+/render-test/
+*.log

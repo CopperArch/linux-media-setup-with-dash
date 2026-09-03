@@ -1,0 +1,1009 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{DASH_USER}} — system status</title>
+<style>
+  :root{
+    --bg:#0a0e14; --bg2:#0e141c; --panel:rgba(16,22,32,.88); --edge:rgba(120,160,220,.14);
+    --ink:#c8d6e8; --dim:#7688a0; --faint:#4a586c;
+    --ok:#3fb950; --warn:#e3a008; --fail:#f4523b; --todo:#4a9eff; --accent:#5ac8fa;
+    --mono:"JetBrains Mono","DejaVu Sans Mono","Noto Sans Mono",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(1100px 700px at 12% -10%, #16243a 0%, transparent 60%),
+      radial-gradient(900px 600px at 100% 110%, #12202e 0%, transparent 55%),
+      var(--bg);
+    color:var(--ink); font-family:var(--mono); font-size:13px; line-height:1.45;
+    overflow:hidden; -webkit-font-smoothing:antialiased;
+  }
+  /* ── page frame ───────────────────────────────────────────────────── */
+  /* Dashboard and terminal sit side by side; only the dock's width changes,
+     so the iframe is never re-created and the Claude session survives every
+     resize. */
+  #shell{display:flex;height:100vh;width:100vw;overflow:hidden}
+  .wrap{flex:1 1 auto;min-width:0;height:100%;
+        display:flex;flex-direction:column;padding:14px 16px 0;gap:10px}
+  #term{flex:0 0 auto;width:0;height:100%;overflow:hidden;background:#0b0f16;
+        border-left:1px solid var(--edge);transition:width .26s ease}
+  #term iframe{width:100%;height:100%;border:0;display:block}
+
+  /* Always-reachable size control — stays visible even at 100%, which is the
+     only way back once the terminal covers the header. */
+  #termctl{position:fixed;right:10px;bottom:8px;z-index:60;display:flex;gap:2px;
+    padding:3px;border-radius:9px;background:rgba(10,15,22,.9);
+    border:1px solid var(--edge);box-shadow:0 6px 20px rgba(0,0,0,.5)}
+  #termctl button{font-family:var(--mono);font-size:11px;line-height:1;
+    padding:4px 8px;border-radius:6px;cursor:pointer;color:var(--dim);
+    background:transparent;border:1px solid transparent;transition:all .12s}
+  #termctl button:hover{color:var(--ink);background:rgba(255,255,255,.06)}
+  #termctl button.on{color:#0a0e14;background:var(--accent);border-color:var(--accent);font-weight:600}
+  #termctl .lbl{font-size:10px;color:var(--faint);padding:4px 4px 4px 6px;letter-spacing:.5px}
+  #paneBtn{color:var(--accent);font-weight:600;border:1px solid rgba(90,200,250,.3)!important;
+    background:rgba(90,200,250,.09)!important;min-width:104px;justify-content:space-between}
+  #paneBtn:hover{background:rgba(90,200,250,.2)!important}
+  #paneMenu{position:absolute;bottom:calc(100% + 6px);left:0;min-width:250px;
+    max-height:70vh;overflow-y:auto;
+    background:#0d131c;border:1px solid var(--edge);border-radius:9px;padding:4px;
+    display:none;flex-direction:column;gap:1px;box-shadow:0 10px 30px rgba(0,0,0,.6)}
+  #paneMenu.on{display:flex}
+  #paneMenu button{justify-content:flex-start;width:100%;text-align:left;padding:5px 9px;
+    white-space:nowrap}
+  #paneMenu button.cur{color:var(--accent)}
+  #paneMenu .menuHead{font-size:9.5px;letter-spacing:1px;text-transform:uppercase;
+    color:var(--faint);padding:6px 9px 2px;margin-top:2px}
+  #paneMenu .menuHead:first-child{margin-top:0}
+  #paneWrap{position:relative;display:flex}
+  #askForm{display:none;gap:3px;align-items:center}
+  #askForm.on{display:flex}
+  #askInput{font-family:var(--mono);font-size:11px;width:230px;padding:4px 8px;
+    border-radius:6px;color:var(--ink);background:rgba(255,255,255,.06);
+    border:1px solid var(--edge);outline:none}
+  #askInput:focus{border-color:var(--accent)}
+  #termctl .sep{width:1px;background:var(--edge);margin:2px 3px}
+
+  /* Squeezed dashboard: drop to two columns so panels stay usable. */
+  .grid.narrow{
+    grid-template-columns:repeat(2,1fr);
+    /* Five rows of areas need five row sizes — with four, the last row gets
+       no track and Services/Daily Routine collapse to nothing. */
+    grid-template-rows:minmax(110px,1fr) minmax(110px,.9fr) minmax(110px,1.1fr)
+                       minmax(110px,1.1fr) minmax(110px,1.1fr);
+    grid-template-areas:
+      "attention attention"
+      "host      thermal"
+      "docker    docker"
+      "disks     media"
+      "services  routine";
+    overflow-y:auto;
+  }
+  .grid.vnarrow{
+    grid-template-columns:1fr;
+    grid-template-rows:repeat(8,minmax(140px,auto));
+    grid-template-areas:"attention" "host" "thermal" "docker" "disks" "media" "services" "routine";
+    overflow-y:auto;
+  }
+  header{display:flex;align-items:baseline;gap:12px;flex:0 0 auto}
+  /* Let the text shrink so the two pills keep their size in a narrow pane
+     instead of being squeezed or wrapped onto a second line. */
+  header h1,header .sub{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  h1{font-size:19px;font-weight:600;letter-spacing:.5px;color:#eaf2ff}
+  h1 .host{color:var(--accent)}
+  .sub{color:var(--dim);font-size:11.5px}
+  .spacer{flex:1}
+  /* The verdict badge and the reboot button are a matched pair: identical
+     box metrics and the same self-alignment, so they sit on one line at the
+     same height and width instead of drifting against the header baseline. */
+  .verdict,.rebootbtn,.updatebtn{
+    display:inline-flex;align-items:center;justify-content:center;
+    box-sizing:border-box;height:26px;width:215px;
+    padding:0 12px;border-radius:13px;overflow:hidden;text-overflow:ellipsis;
+    font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.4px;
+    line-height:1;white-space:nowrap;align-self:center;flex:0 0 auto;
+  }
+  .v-ok{background:rgba(63,185,80,.13);color:var(--ok);border:1px solid rgba(63,185,80,.35)}
+  .v-warn{background:rgba(227,160,8,.13);color:var(--warn);border:1px solid rgba(227,160,8,.35)}
+  .v-fail{background:rgba(244,82,59,.14);color:var(--fail);border:1px solid rgba(244,82,59,.4)}
+
+  /* ── grid of panels ───────────────────────────────────────────────── */
+  .grid{
+    flex:1 1 auto;min-height:0;display:grid;gap:10px;padding-bottom:14px;
+    grid-template-columns:repeat(4,1fr);
+    grid-template-rows:minmax(0,.92fr) minmax(0,.82fr) minmax(0,1.26fr);
+    grid-template-areas:
+      "attention attention host    thermal"
+      "attention attention docker  docker"
+      "disks     media     services routine";
+  }
+  .p-attention{grid-area:attention} .p-host{grid-area:host}
+  .p-thermal{grid-area:thermal} .p-docker{grid-area:docker}
+  .p-disks{grid-area:disks} .p-media{grid-area:media}
+  .p-services{grid-area:services} .p-routine{grid-area:routine}
+
+  .panel{
+    background:var(--panel);border:1px solid var(--edge);border-radius:10px;
+    display:flex;flex-direction:column;min-height:0;overflow:hidden;
+    /* No backdrop-filter: it existed for the old photo wallpaper, and blurring
+       a live animation would re-run the filter on all 8 panels every frame. */
+  }
+  .panel > h2{
+    flex:0 0 auto;font-size:11px;font-weight:600;letter-spacing:1.3px;
+    text-transform:uppercase;color:var(--dim);
+    padding:8px 12px 7px;border-bottom:1px solid var(--edge);
+    display:flex;align-items:center;gap:8px;
+  }
+  .panel > h2 .tag{margin-left:auto;font-size:10.5px;letter-spacing:.3px;
+    color:var(--faint);text-transform:none;font-weight:400}
+  /* every panel body scrolls on its own so nothing is ever cut off */
+  .body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:8px 12px 10px}
+  .body::-webkit-scrollbar{width:8px}
+  .body::-webkit-scrollbar-track{background:transparent}
+  .body::-webkit-scrollbar-thumb{background:rgba(120,160,220,.2);border-radius:4px}
+  .body::-webkit-scrollbar-thumb:hover{background:rgba(120,160,220,.38)}
+
+  /* ── generic bits ─────────────────────────────────────────────────── */
+  .row{display:flex;align-items:center;gap:8px;padding:2.5px 0}
+  .row .k{color:var(--dim);flex:0 0 auto}
+  .row .v{margin-left:auto;text-align:right;white-space:nowrap}
+  .bar{height:5px;border-radius:3px;background:rgba(255,255,255,.07);overflow:hidden;flex:1 1 auto;min-width:40px}
+  .bar > i{display:block;height:100%;border-radius:3px;background:var(--ok);transition:width .5s}
+  .bar.w > i{background:var(--warn)} .bar.f > i{background:var(--fail)}
+  .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--ok)}
+  .dot.w{background:var(--warn)} .dot.f{background:var(--fail)}
+  .dot.i{background:var(--faint)}
+  .muted{color:var(--dim)} .tiny{font-size:11px}
+  .empty{color:var(--faint);font-style:italic;padding:10px 2px}
+
+  /* attention items */
+  .item{display:flex;gap:9px;padding:6px 8px;border-radius:7px;margin-bottom:5px;
+    border-left:3px solid var(--faint);background:rgba(255,255,255,.028)}
+  .item.fail{border-left-color:var(--fail);background:rgba(244,82,59,.075)}
+  .item.warn{border-left-color:var(--warn);background:rgba(227,160,8,.07)}
+  .item.todo{border-left-color:var(--todo);background:rgba(74,158,255,.07)}
+  .item .txt{min-width:0;flex:1}
+  .item .src{font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--faint)}
+  .item .msg{word-break:break-word}
+  .item .act{font-size:11px;color:var(--accent);opacity:.85;word-break:break-all;margin-top:2px}
+  .fixbtn{flex:0 0 auto;align-self:center;font-family:var(--mono);font-size:10.5px;
+    letter-spacing:.4px;padding:3px 9px;border-radius:6px;cursor:pointer;
+    color:var(--accent);background:rgba(90,200,250,.1);
+    border:1px solid rgba(90,200,250,.32);transition:background .15s,color .15s}
+  .fixbtn:hover{background:rgba(90,200,250,.24);color:#eaf7ff}
+  .fixbtn:disabled{opacity:.45;cursor:default}
+  .rebootbtn{cursor:pointer;color:var(--fail);background:rgba(244,82,59,.09);
+    border:1px solid rgba(244,82,59,.32);transition:all .15s}
+  .rebootbtn:hover{background:rgba(244,82,59,.24);color:#ffe6e2}
+  .rebootbtn:disabled{opacity:.5;cursor:default}
+  .updatebtn{cursor:pointer;color:var(--accent);background:rgba(90,200,250,.1);
+    border:1px solid rgba(90,200,250,.32);transition:all .15s;width:170px}
+  .updatebtn:hover{background:rgba(90,200,250,.24);color:#eaf7ff}
+  .updatebtn:disabled{opacity:.5;cursor:default}
+  .dangerbtn{font-family:var(--mono);font-size:11px;padding:4px 12px;border-radius:6px;
+    cursor:pointer;color:#fff;background:rgba(200,50,35,.85);
+    border:1px solid rgba(244,82,59,.6)}
+  .dangerbtn:hover{background:rgba(230,60,42,.95)}
+  .verdict{cursor:default}
+  .verdict.clickable{cursor:pointer;transition:filter .15s,transform .1s}
+  .verdict.clickable:hover{filter:brightness(1.35)}
+  .verdict.clickable:active{transform:scale(.97)}
+
+  /* repair overlay */
+  #overlay{position:fixed;inset:0;background:rgba(5,9,14,.82);backdrop-filter:blur(4px);
+    display:none;align-items:center;justify-content:center;z-index:50}
+  #overlay.on{display:flex}
+  .sheet{width:min(980px,94vw);max-height:88vh;display:flex;flex-direction:column;
+    background:#0e141d;border:1px solid var(--edge);border-radius:12px;overflow:hidden;
+    box-shadow:0 24px 70px rgba(0,0,0,.6)}
+  .sheet h3{font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:var(--dim);
+    padding:11px 15px;border-bottom:1px solid var(--edge);display:flex;gap:10px;align-items:center}
+  .sheet .log{flex:1;overflow:auto;padding:10px 15px;font-size:11.5px}
+  .sheet .foot{padding:9px 15px;border-top:1px solid var(--edge);display:flex;gap:9px;align-items:center}
+  .res{margin-bottom:8px;padding:7px 9px;border-radius:7px;background:rgba(255,255,255,.03);
+    border-left:3px solid var(--faint)}
+  .res.ok{border-left-color:var(--ok)} .res.bad{border-left-color:var(--fail)}
+  .res.cur{border-left-color:var(--accent);background:rgba(90,200,250,.06)}
+  .res.queued{opacity:.4}
+  .res .t{display:flex;gap:8px;align-items:center}
+  .res .why{margin-top:4px;font-size:10.5px;color:var(--dim);line-height:1.4}
+  .res pre{margin-top:5px;white-space:pre-wrap;word-break:break-word;color:var(--dim);
+    font-size:10.5px;max-height:320px;overflow:auto}
+  .spin{width:11px;height:11px;border-radius:50%;border:2px solid rgba(90,200,250,.25);
+    border-top-color:var(--accent);animation:sp .7s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .bucket{margin-bottom:10px}
+  .bucket > h3{font-size:11px;letter-spacing:1px;text-transform:uppercase;
+    margin:2px 0 6px;display:flex;align-items:center;gap:7px}
+  .bucket.fail > h3{color:var(--fail)} .bucket.warn > h3{color:var(--warn)}
+  .bucket.todo > h3{color:var(--todo)}
+  .bucket > h3 .n{background:rgba(255,255,255,.09);border-radius:10px;
+    padding:0 7px;font-size:10.5px;color:var(--ink)}
+
+  /* container chips */
+  .cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:5px}
+  .c{display:flex;align-items:center;gap:7px;padding:4px 7px;border-radius:6px;
+    background:rgba(255,255,255,.03);border:1px solid transparent}
+  .c.bad{background:rgba(244,82,59,.1);border-color:rgba(244,82,59,.3)}
+  .c.warnish{background:rgba(227,160,8,.09);border-color:rgba(227,160,8,.26)}
+  .c .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}
+  .c .u{margin-left:auto;font-size:10px;color:var(--faint);white-space:nowrap;padding-left:4px}
+
+  /* cores */
+  .cores{display:grid;grid-template-columns:repeat(auto-fill,minmax(30px,1fr));gap:3px;margin-top:5px}
+  .core{height:26px;border-radius:3px;background:rgba(255,255,255,.06);position:relative;overflow:hidden}
+  .core > i{position:absolute;bottom:0;left:0;right:0;background:var(--accent);opacity:.75;transition:height .5s}
+  .core > span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:9px;color:#dfe9f7}
+  .big{font-size:26px;font-weight:600;color:#eaf2ff;line-height:1.1}
+  .stat{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  .stat > div{min-width:62px}
+  .stat .lbl{font-size:10px;letter-spacing:.6px;text-transform:uppercase;color:var(--faint)}
+  table{width:100%;border-collapse:collapse}
+  td{padding:2.5px 0;vertical-align:middle}
+  td.r{text-align:right;white-space:nowrap;color:var(--dim)}
+  .stale{color:var(--fail)}
+  footer{flex:0 0 auto;display:none}
+</style>
+</head>
+<body>
+<div id="shell">
+<div class="wrap">
+  <header>
+    <h1><span class="host" id="hostname">…</span> <span class="muted" id="osline"></span></h1>
+    <span class="sub" id="uptime"></span>
+    <span class="spacer"></span>
+    <span class="sub" id="stamp"></span>
+    <span class="verdict v-ok" id="verdict">…</span>
+    <button class="updatebtn" id="refreshbtn" style="width:120px"
+            title="Re-run the status collector now">⟳ Refresh</button>
+    <button class="updatebtn" id="updatebtn" title="Update Claude Code, its plugins, and OpenCode (via topgrade)">⇪ Update</button>
+    <button class="rebootbtn" id="rebootbtn" title="Reboot this machine">⏻ Reboot</button>
+  </header>
+
+  <div id="overlay">
+    <div class="sheet">
+      <h3><span id="sheet-spin" class="spin"></span><span id="sheet-title">Repairing…</span></h3>
+      <div class="log" id="sheet-log"></div>
+      <div class="foot">
+        <span class="tiny muted" id="sheet-note">Running whitelisted repairs — this can take a minute.</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="fixbtn" id="sheet-close" disabled>Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <section class="panel p-attention">
+      <h2>Needs attention <span class="tag" id="att-tag"></span></h2>
+      <div class="body" id="attention"></div>
+    </section>
+
+    <section class="panel p-host">
+      <h2>CPU &amp; memory</h2>
+      <div class="body" id="host"></div>
+    </section>
+
+    <section class="panel p-thermal">
+      <h2>Thermals &amp; fans</h2>
+      <div class="body" id="thermal"></div>
+    </section>
+
+    <section class="panel p-docker">
+      <h2>Containers <span class="tag" id="docker-tag"></span></h2>
+      <div class="body" id="docker"></div>
+    </section>
+
+    <section class="panel p-disks">
+      <h2>Storage</h2>
+      <div class="body" id="disks"></div>
+    </section>
+
+    <section class="panel p-media">
+      <h2>Media library</h2>
+      <div class="body" id="media"></div>
+    </section>
+
+    <section class="panel p-services">
+      <h2>Services &amp; VPN</h2>
+      <div class="body" id="services"></div>
+    </section>
+
+    <section class="panel p-routine">
+      <h2>Daily routine <span class="tag" id="routine-tag"></span></h2>
+      <div class="body" id="routine"></div>
+    </section>
+  </div>
+</div><!-- /.wrap -->
+
+<aside id="term"><iframe id="termframe" title="Claude Code"
+        src="about:blank" allow="clipboard-read; clipboard-write"></iframe></aside>
+</div><!-- /#shell -->
+
+<div id="termctl">
+  <span id="paneWrap">
+    <button id="paneBtn" title="Choose what runs in the pane">Claude Code ▾</button>
+    <span id="paneMenu"></span>
+  </span>
+  <button id="askBtn" title="Ask an LLM">⌕</button>
+  <span id="askForm">
+    <button id="askTarget" title="Which model answers">Claude</button>
+    <input id="askInput" placeholder="ask…" autocomplete="off">
+  </span>
+  <span class="sep"></span>
+  <button data-w="0">off</button>
+  <button data-w="25">&frac14;</button>
+  <button data-w="50">&frac12;</button>
+  <button data-w="75">&frac34;</button>
+  <button data-w="100">full</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+/* ── terminal dock ──────────────────────────────────────────────────────
+   Only the dock's width changes, never the iframe's src, so sliding between
+   ¼ / ½ / ¾ keeps the running Claude session alive. The chosen width is
+   remembered across restarts. */
+(() => {
+  const dock = document.getElementById("term");
+  const ctl  = document.getElementById("termctl");
+  const grid = document.querySelector(".grid");
+  if(!dock || !ctl) return;
+
+  const WIDTHS = [0, 25, 50, 75, 100];
+  let w = parseInt(localStorage.getItem("termWidth") ?? "0", 10);
+  if(!WIDTHS.includes(w)) w = 0;
+
+  function apply(next, remember=true){
+    w = next;
+    dock.style.width = w + "%";
+    if(remember) localStorage.setItem("termWidth", String(w));
+    for(const b of ctl.querySelectorAll("button"))
+      b.classList.toggle("on", Number(b.dataset.w) === w);
+    // Reflow the dashboard for whatever space is left.
+    if(grid){
+      const avail = window.innerWidth * (100 - w) / 100;
+      grid.classList.toggle("narrow", avail < 1150 && avail >= 620);
+      grid.classList.toggle("vnarrow", avail < 620);
+    }
+  }
+
+  for(const b of ctl.querySelectorAll("button[data-w]"))
+    b.onclick = () => {
+      const next = Number(b.dataset.w);
+      apply(next);
+      // Opening the dock counts as wanting to use it — boot the current
+      // pane if nothing has started yet (width buttons never reload a
+      // running session).
+      if(next > 0 && !loaded) openPane(pane, null, null, false);
+    };
+
+  /* ── which program runs in the pane ──────────────────────────────────
+     Changing program means a new session, so the iframe src is only
+     rewritten here — never on a resize. */
+  const frame = document.getElementById("termframe");
+  const btn   = document.getElementById("paneBtn");
+  const menu  = document.getElementById("paneMenu");
+  const askBtn= document.getElementById("askBtn");
+  const askF  = document.getElementById("askForm");
+  const askIn = document.getElementById("askInput");
+  const TTYD  = "http://127.0.0.1:7682/";
+  let pane = localStorage.getItem("termPane") || "claude";
+  let loaded = false;   // true once a program has actually been booted
+  // Friendly names by pane id, so width buttons / Ctrl+` can re-boot the
+  // current pane without knowing its label (they pass null below).
+  const PANE_LABELS = {claude: "Claude Code"};
+
+  function openPane(id, label, extra, reveal=true){
+    pane = id;
+    loaded = true;
+    if(!extra) localStorage.setItem("termPane", id);   // don't persist one-off asks
+    btn.textContent = (label || PANE_LABELS[id] || id) + " ▾";
+    let url = TTYD + "?arg=" + encodeURIComponent(id);
+    if(extra) url += "&arg=" + encodeURIComponent(extra);
+    frame.src = url;
+    // Picking a pane implies wanting to see it — but not on first load,
+    // or the dock would force itself open every time the page starts.
+    if(reveal && w === 0) apply(50);
+  }
+
+  // Server-side group order: agent tools first, then the AI panes bucketed
+  // by who pays for them, then local, then plain system utilities.
+  const GROUP_LABEL = {agent:"Agent", paid:"Paid", free:"Free", local:"Local", system:"System"};
+  const GROUP_ORDER = ["agent", "paid", "free", "local", "system"];
+
+  fetch("api/panes").then(r=>r.json()).then(d=>{
+    const panes = d.panes || [];    // /api/panes already excludes the ask-only ids
+    for(const p of panes) PANE_LABELS[p.id] = p.label;
+    menu.innerHTML = "";
+    let lastGroup = null;
+    for(const g of GROUP_ORDER){
+      for(const p of panes.filter(p=>p.group===g)){
+        if(g !== lastGroup){
+          const h = document.createElement("div");
+          h.className = "menuHead";
+          h.textContent = GROUP_LABEL[g] || g;
+          menu.appendChild(h);
+          lastGroup = g;
+        }
+        const b = document.createElement("button");
+        b.textContent = p.price ? `${p.label} — ${p.price}` : p.label;
+        b.classList.toggle("cur", p.id === pane);
+        b.onclick = () => { menu.classList.remove("on"); openPane(p.id, p.label); };
+        menu.appendChild(b);
+      }
+    }
+    const cur = panes.find(p=>p.id===pane);
+    btn.textContent = (cur ? cur.label : "Claude Code") + " ▾";
+  }).catch(()=>{});
+
+  // No program boots on page load: the iframe stays blank until a pane is
+  // picked (or the dock is opened with a width button).
+
+  btn.onclick = e => { e.stopPropagation(); menu.classList.toggle("on"); };
+  document.addEventListener("click", () => menu.classList.remove("on"));
+  menu.onclick = e => e.stopPropagation();
+
+  askBtn.onclick = e => {
+    e.stopPropagation();
+    askF.classList.toggle("on");
+    if(askF.classList.contains("on")) askIn.focus();
+  };
+  // The question can go to any online/local model; the toggle only decides
+  // which pane id the query is sent to. Fetched from the server so a new
+  // model added to PANES shows up here with no client-side edit — and its
+  // current price (which changes nightly via ai-panes-check.py) comes along.
+  const tgt = document.getElementById("askTarget");
+  let askTo = localStorage.getItem("askTarget") || "ask";
+  let TARGETS = {ask: {label:"Claude", pane:"ask", title:"Ask Claude"}};   // usable before the fetch lands
+  const paintTarget = () => {
+    const t = TARGETS[askTo] || TARGETS.ask;
+    tgt.textContent = t.label;
+    tgt.title = t.title;
+  };
+  paintTarget();
+  fetch("api/ask-targets").then(r=>r.json()).then(d=>{
+    const next = {};
+    for(const t of (d.targets||[])){
+      PANE_LABELS[t.id] = t.label;
+      next[t.id] = {label: t.label, pane: t.id,
+                    title: "Ask " + t.label + (t.price ? ` (${t.price})` : "")};
+    }
+    if(Object.keys(next).length) TARGETS = next;
+    if(!TARGETS[askTo]) askTo = "ask";
+    paintTarget();
+  }).catch(()=>{});
+  tgt.onclick = e => {
+    e.stopPropagation();
+    const ids = Object.keys(TARGETS);
+    askTo = ids[(ids.indexOf(askTo) + 1) % ids.length];
+    localStorage.setItem("askTarget", askTo);
+    paintTarget(); askIn.focus();
+  };
+
+  askIn.onkeydown = e => {
+    if(e.key === "Enter" && askIn.value.trim()){
+      const t = TARGETS[askTo];
+      openPane(t.pane, t.title, askIn.value.trim());
+      askIn.value = "";
+      askF.classList.remove("on");
+    }
+    if(e.key === "Escape") askF.classList.remove("on");
+  };
+
+  // Ctrl+` cycles. Only fires when the dashboard has focus — inside the
+  // terminal the keystroke belongs to the shell, which is why the on-screen
+  // control is pinned and always visible.
+  addEventListener("keydown", e => {
+    if(e.ctrlKey && (e.key === "`" || e.code === "Backquote")){
+      e.preventDefault();
+      const next = WIDTHS[(WIDTHS.indexOf(w) + 1) % WIDTHS.length];
+      apply(next);
+      if(next > 0 && !loaded) openPane(pane, null, null, false);
+    }
+  });
+  addEventListener("resize", () => apply(w, false));
+  apply(w, false);
+})();
+
+/* ── reboot ─────────────────────────────────────────────────────────────
+   Deliberately not one of the auto-fixes: it only ever happens from this
+   button, behind an explicit confirmation. */
+(() => {
+  const btn = $("rebootbtn");
+  if(!btn) return;
+  btn.onclick = () => {
+    const ov = $("overlay"), log = $("sheet-log"), close = $("sheet-close");
+    ov.classList.add("on");
+    $("sheet-spin").style.display = "none";
+    $("sheet-title").textContent = "Reboot this machine?";
+    $("sheet-note").textContent = "Everything will be stopped and restarted.";
+    close.disabled = false;
+    log.innerHTML = `
+      <div class="res bad">
+        <div class="t"><span class="dot f"></span><span>All containers, downloads and this dashboard will restart.</span></div>
+        <pre>The dashboard comes back on its own — its services are enabled at boot.
+Reconnecting takes roughly a minute.</pre>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="dangerbtn" id="reboot-yes">Yes, reboot now</button>
+        <button class="fixbtn" id="reboot-no">Cancel</button>
+      </div>`;
+    $("reboot-no").onclick = () => ov.classList.remove("on");
+    $("reboot-yes").onclick = async () => {
+      $("reboot-yes").disabled = true;
+      $("sheet-title").textContent = "Rebooting…";
+      try{
+        const r = await fetch("api/reboot", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({confirm:"REBOOT"}),
+        });
+        const d = await r.json();
+        if(!r.ok || !d.ok) throw new Error(d.error || ("HTTP "+r.status));
+        log.innerHTML = `<div class="res ok"><div class="t">
+            <span class="spin"></span><span>Reboot accepted — going down now.</span></div>
+            <pre>${esc(d.output||"")}</pre></div>`;
+        $("sheet-note").textContent = "This page will reconnect by itself once the box is back.";
+      }catch(e){
+        log.innerHTML = `<div class="res bad"><div class="t">
+            <span class="dot f"></span><span>Reboot failed</span></div>
+            <pre>${esc(e.message)}</pre></div>`;
+        $("sheet-title").textContent = "Reboot failed";
+      }
+    };
+  };
+})();
+/* ── topgrade (Claude Code / OpenCode) ────────────────────────────────
+   A plain one-click repair, no confirmation needed — it only updates
+   Claude Code, its plugins, and OpenCode. apt/snap/firmware/containers
+   run nightly via daily-routine.sh instead, with their own verify+rollback. */
+(() => {
+  const btn = $("updatebtn");
+  if(!btn) return;
+  btn.onclick = () => {
+    if(fixing) return;
+    btn.disabled = true;
+    runFixes([{id:"topgrade", label:"Topgrade (Claude Code / OpenCode)"}],
+              "Updating Claude Code & OpenCode…")
+      .finally(() => { btn.disabled = false; });
+  };
+})();
+/* ── manual refresh ───────────────────────────────────────────────────
+   /api/refresh re-runs the collector immediately instead of waiting for
+   the next 60s timer tick. */
+(() => {
+  const btn = $("refreshbtn");
+  if(!btn) return;
+  btn.onclick = async () => {
+    if(btn.disabled) return;
+    btn.disabled = true;
+    try{
+      await fetch("api/refresh", {method:"POST"});
+      await tick();
+    }finally{
+      btn.disabled = false;
+    }
+  };
+})();
+const esc = s => String(s==null?"":s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function human(n,unit=1024){
+  n = Number(n)||0; const u=["B","K","M","G","T","P"];
+  for(const s of u){ if(Math.abs(n)<unit) return (s==="B"||s==="K"? n.toFixed(0): n.toFixed(1))+s; n/=unit; }
+  return n.toFixed(1)+"E";
+}
+function dur(sec){
+  sec=Math.max(0,Math.floor(sec)); const d=Math.floor(sec/86400), h=Math.floor(sec%86400/3600), m=Math.floor(sec%3600/60);
+  return d? `${d}d ${h}h` : h? `${h}h ${m}m` : `${m}m`;
+}
+const cls = (v,w,f) => v>=f? "f" : v>=w? "w" : "";
+
+function bar(pct,w=80,f=92){
+  return `<span class="bar ${cls(pct,w,f)}"><i style="width:${Math.min(100,Math.max(0,pct))}%"></i></span>`;
+}
+
+/* ── panels ─────────────────────────────────────────────────────────── */
+let FIXABLE = [];   // fixes for whatever is currently failing, for the badge
+
+function renderAttention(d){
+  const a = d.attention||{}, buckets=[
+    ["fail","Failed",a.failed||[]],
+    ["warn","Warnings",a.warning||[]],
+    ["todo","Needs doing",a.todo||[]],
+  ];
+  const total = buckets.reduce((n,b)=>n+b[2].length,0);
+  $("att-tag").textContent = total? `${total} item${total>1?"s":""}` : "";
+
+  let h="";
+  const bucketFixes = {};
+  for(const [k,title,items] of buckets){
+    // Collapse duplicates: several findings often share one remedy (e.g. every
+    // daily-routine entry is cleared by the same re-run).
+    const seen = new Set(), fixes = [];
+    for(const i of items){
+      if(!i.fix) continue;
+      const key = i.fix.id + JSON.stringify(i.fix.args||{});
+      if(seen.has(key)) continue;
+      seen.add(key); fixes.push(i.fix);
+    }
+    bucketFixes[k] = fixes;
+    h += `<div class="bucket ${k}"><h3>${title} <span class="n">${items.length}</span>`
+       + (fixes.length ? `<button class="fixbtn" data-fixall="${k}" style="margin-left:auto"
+            title="${esc(fixes.map(f=>f.label).join("\n"))}">Fix all ${fixes.length}</button>` : "")
+       + `</h3>`;
+    if(!items.length){
+      h += `<div class="empty tiny">nothing here — all clear</div>`;
+    } else {
+      items.forEach((i,idx)=>{
+        const fid = `${k}-${idx}`;
+        h += `<div class="item ${k}"><div class="txt">
+                <div class="src">${esc(i.source)}</div>
+                <div class="msg">${esc(i.message)}</div>
+                ${i.action? `<div class="act">↳ ${esc(i.action)}</div>`:""}
+              </div>
+              ${i.fix? `<button class="fixbtn" data-fix="${fid}" title="${esc(i.fix.label||"")}">Fix</button>`:""}
+            </div>`;
+      });
+    }
+    h += `</div>`;
+  }
+  $("attention").innerHTML = h;
+
+  // Wire per-item buttons against the freshly rendered data.
+  const byId = {};
+  for(const [k,,items] of buckets) items.forEach((i,idx)=>{ byId[`${k}-${idx}`]=i; });
+  for(const btn of $("attention").querySelectorAll("[data-fix]")){
+    const item = byId[btn.dataset.fix];
+    btn.onclick = () => runFixes([item.fix], item.fix.label || "Repair");
+  }
+  const BUCKET_LABEL = {fail:"failing item(s)", warn:"warning(s)", todo:"task(s)"};
+  for(const btn of $("attention").querySelectorAll("[data-fixall]")){
+    const k = btn.dataset.fixall, fixes = bucketFixes[k] || [];
+    btn.onclick = () => runFixes(fixes, `Repairing ${fixes.length} ${BUCKET_LABEL[k]}`);
+  }
+
+  // The badge repairs the most serious bucket that has anything fixable, so
+  // it stays useful once the failures are cleared and only warnings remain.
+  FIXABLE = bucketFixes.fail.length ? bucketFixes.fail
+          : bucketFixes.warn.length ? bucketFixes.warn
+          : bucketFixes.todo;
+
+  const v=$("verdict");
+  v.classList.remove("clickable");
+  v.onclick = null;
+  const nFail=(a.failed||[]).length, nWarn=(a.warning||[]).length;
+
+  let cls, text, what;
+  if(nFail){ cls="v-fail"; text=`${nFail} FAILING`; what="failing item(s)"; }
+  else if(nWarn){ cls="v-warn"; text=`${nWarn} WARNING`; what="warning(s)"; }
+  else if((a.todo||[]).length){ cls="v-warn"; text=`${a.todo.length} TO DO`; what="task(s)"; }
+  else { cls="v-ok"; text="ALL SYSTEMS OK"; what=null; }
+
+  v.className = "verdict " + cls;
+  if(what && FIXABLE.length){
+    v.textContent = `${text} — CLICK TO FIX`;
+    v.classList.add("clickable");
+    v.title = FIXABLE.map(f=>f.label).join("\n");
+    v.onclick = () => runFixes(FIXABLE, `Repairing ${FIXABLE.length} ${what}`);
+  } else {
+    v.textContent = text;
+    if(what) v.title = "No automatic repair available for these — see the panel";
+  }
+}
+
+/* ── one-click repair ───────────────────────────────────────────────── */
+// What each whitelisted fix id actually does, shown against the item that's
+// currently running so the log window isn't just a bare spinner for minutes.
+const FIX_INFO = {
+  docker_start:      "Starting the stopped container.",
+  docker_restart:    "Restarting the container. If it's gluetun, this is rerouted into a full VPN-group recreate instead — restarting gluetun alone would strip networking from the containers sharing its namespace.",
+  vpn_recreate:       "Force-recreating gluetun and the 7 containers sharing its network namespace (qbittorrent, prowlarr, radarr, sonarr, flaresolverr, chrome, jellyseerr) together, so none of them lose networking.",
+  vpn_rotate:         "Requesting a new VPN exit IP from the gluetun control server.",
+  selfheal:           "Running the nightly self-heal pass: re-enforcing Prowlarr indexer seeder/priority settings across all 3 config layers, checking download pipeline throughput, blocklisting dead/stalled downloads, and verifying indexers aren't silently Cloudflare-blocked. This is the heaviest fix — it makes several sequential API calls and can take up to 15 minutes.",
+  prowlarr_testall:   "Asking Prowlarr to test every indexer and reporting which ones still fail validation.",
+  cloudflare_unblock: "Rotating the VPN exit IP (up to 3 attempts, ~15s apart) to escape a Cloudflare IP/range ban, probing the blocked host after each rotation, then re-testing all indexers.",
+  apt_upgrade:        "Running apt-get update && upgrade over sudo. Duration depends on how many packages are pending.",
+  daily_routine_quick:"Running the quick pass of the nightly daily-routine script.",
+  restart_unit:       "Restarting the systemd --user unit.",
+  topgrade:           "Updating Claude Code, its plugins, and OpenCode via topgrade.",
+};
+
+let fixing = false;
+async function runFixes(fixes, title, btn){
+  if(fixing || !fixes || !fixes.length) return;
+  fixing = true;
+  if(btn) btn.disabled = true;   // freeze the exact control that was clicked, immediately
+  const ov=$("overlay"), log=$("sheet-log"), close=$("sheet-close");
+  ov.classList.add("on");
+  $("sheet-title").textContent = title;
+  $("sheet-spin").style.display = "";
+  $("sheet-note").textContent = "Running whitelisted repairs — this can take a minute.";
+  close.disabled = true;
+  log.innerHTML = fixes.map(f=>
+    `<div class="res"><div class="t"><span class="spin"></span><span>${esc(f.label||f.id)}</span></div></div>`
+  ).join("");
+
+  const rowsFor = (results, pending, currentId) => results.map((r,i)=>{
+      const label = esc((fixes[i]&&fixes[i].label) || r.id);
+      return `<div class="res ${r.ok?"ok":"bad"}">
+                <div class="t"><span class="dot ${r.ok?"":"f"}"></span>
+                  <span>${label}</span>
+                  <span class="v tiny muted" style="margin-left:auto">${r.ok?"fixed":"failed"} · ${r.seconds}s</span></div>
+                ${r.output? `<pre>${esc(r.output).slice(0,2500)}</pre>`:""}
+              </div>`;
+    }).join("") + pending.map((f,i)=>{
+      const isCurrent = i===0;   // first pending item is whatever job.current names
+      const why = FIX_INFO[f.id];
+      return `<div class="res ${isCurrent?"cur":"queued"}">
+                <div class="t"><span class="spin"></span><span>${esc(f.label||f.id)}</span>
+                  <span class="v tiny muted" style="margin-left:auto">${isCurrent?"running…":"queued"}</span></div>
+                ${isCurrent && why? `<div class="why">${esc(why)}</div>`:""}
+              </div>`;
+    }).join("");
+
+  try{
+    let res = await fetch("api/fix", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({fixes: fixes.map(f=>({id:f.id, args:f.args||{}}))}),
+    });
+    let started = await res.json();
+    // 409 means a repair is already in flight server-side (e.g. another tab,
+    // or this click raced the overlay). Rather than reporting a spurious
+    // failure, just attach to whatever is already running.
+    if(res.status !== 409 && !res.ok) throw new Error(started.error || ("HTTP "+res.status));
+
+    // Repairs run server-side and can take minutes; poll rather than holding
+    // a request open, and show each result the moment it lands.
+    let job = null;
+    for(;;){
+      await new Promise(r=>setTimeout(r, 1500));
+      const jr = await fetch("api/job?_="+Date.now(), {cache:"no-store"});
+      job = await jr.json();
+      const done = (job.results||[]).length;
+      log.innerHTML = rowsFor(job.results||[], fixes.slice(done), job.current);
+      const secs = Math.round(Date.now()/1000 - (job.started||0));
+      const why = job.current && FIX_INFO[job.current];
+      $("sheet-note").textContent =
+        `Running repair ${Math.min(done+1, fixes.length)} of ${fixes.length} — ${secs}s elapsed.`
+        + (why ? ` ${why}` : " This can take several minutes.");
+      if(job.done) break;
+    }
+    if(job.error) throw new Error(job.error);
+
+    const fixed = (job.results||[]).filter(r=>r.ok).length;
+    const failed = (job.results||[]).length - fixed;
+    $("sheet-title").textContent = `${fixed} fixed, ${failed} still failing`;
+    $("sheet-note").textContent = "Status re-collected — the panels below are up to date.";
+  }catch(e){
+    log.innerHTML = `<div class="res bad"><div class="t">
+        <span class="dot f"></span><span>Repair request failed</span></div>
+        <pre>${esc(e.message)}</pre></div>`;
+    $("sheet-title").textContent = "Repair failed";
+    $("sheet-note").textContent = "Nothing was changed, or the run was interrupted.";
+  }finally{
+    $("sheet-spin").style.display = "none";
+    close.disabled = false;
+    fixing = false;
+    if(btn) btn.disabled = false;
+    tick();   // pull the post-repair state
+  }
+}
+$("sheet-close").onclick = () => $("overlay").classList.remove("on");
+$("overlay").onclick = e => { if(e.target.id==="overlay" && !fixing) $("overlay").classList.remove("on"); };
+
+function renderHost(d){
+  const h=d.host||{}, c=h.cpu||{}, m=h.memory||{}, l=h.load||{};
+  if(h.error){ $("host").innerHTML=`<div class="empty">${esc(h.error)}</div>`; return; }
+  const cores=(c.cores||[]);
+  let out = `<div class="stat">
+      <div><div class="lbl">CPU</div><div class="big">${(c.total??0).toFixed(0)}<span class="tiny muted">%</span></div></div>
+      <div><div class="lbl">Memory</div><div class="big">${(m.percent??0).toFixed(0)}<span class="tiny muted">%</span></div></div>
+      <div><div class="lbl">Load</div><div class="big">${(l["1"]??0).toFixed(2)}</div></div>
+    </div>
+    <div class="row tiny"><span class="k">${esc((c.model||"").replace(/\(R\)|\(TM\)|CPU/g,"").trim())}</span></div>
+    <div class="row"><span class="k">RAM</span>${bar(m.percent||0)}<span class="v tiny">${human(m.used)} / ${human(m.total)}</span></div>`;
+  if(m.swap_total){
+    const sp = 100*m.swap_used/m.swap_total;
+    out += `<div class="row"><span class="k">Swap</span>${bar(sp,40,75)}<span class="v tiny">${human(m.swap_used)} / ${human(m.swap_total)}</span></div>`;
+  }
+  out += `<div class="row tiny"><span class="k">load 1/5/15</span><span class="v">${(l["1"]??0).toFixed(2)} · ${(l["5"]??0).toFixed(2)} · ${(l["15"]??0).toFixed(2)} <span class="muted">(${l.ncpu||"?"} cpu)</span></span></div>`;
+  out += `<div class="cores">` + cores.map((v,i)=>
+      `<div class="core" title="core ${i}: ${v}%"><i style="height:${Math.min(100,v)}%"></i><span>${Math.round(v)}</span></div>`
+    ).join("") + `</div>`;
+  $("host").innerHTML = out;
+}
+
+function renderThermal(d){
+  const s=(d.host||{}).sensors||{}, t=s.temps||[], f=s.fans||[];
+  let out="";
+  if(!t.length && !f.length) out = `<div class="empty">no sensor data</div>`;
+  for(const x of t){
+    const crit = x.crit||100, pct = 100*x.value/crit;
+    out += `<div class="row"><span class="k tiny">${esc(x.label)}</span>${bar(pct,75,90)}<span class="v">${x.value.toFixed(0)}°C</span></div>`;
+  }
+  for(const x of f){
+    out += `<div class="row tiny"><span class="k">${esc(x.label)} <span class="muted">${esc(x.chip)}</span></span><span class="v">${x.rpm} rpm</span></div>`;
+  }
+  $("thermal").innerHTML = out;
+}
+
+function renderDocker(d){
+  const k=d.docker||{};
+  if(k.error){ $("docker").innerHTML=`<div class="empty">${esc(k.error)}</div>`; return; }
+  $("docker-tag").textContent = `${k.running}/${k.total} running`;
+  const list=(k.containers||[]);
+  let out = `<div class="cgrid">`;
+  for(const c of list){
+    const bad = c.state!=="running" || c.health==="unhealthy";
+    const warnish = c.health==="starting" || (c.restarts>=5);
+    const dot = bad? "f" : warnish? "w" : (c.state==="running"? "" : "i");
+    const detail = c.state!=="running" ? c.state
+                 : c.cpu!=null ? `${c.cpu.toFixed(0)}% · ${(c.mem||"").split(" / ")[0]}`
+                 : c.since;
+    out += `<div class="c ${bad?"bad":warnish?"warnish":""}" title="${esc(c.image)} — ${esc(c.status)}">
+              <span class="dot ${dot}"></span>
+              <span class="n">${esc(c.name)}</span>
+              <span class="u">${esc(detail)}</span>
+            </div>`;
+  }
+  out += `</div>`;
+  $("docker").innerHTML = out;
+}
+
+function renderDisks(d){
+  const fs=((d.disks||{}).filesystems)||[];
+  if(!fs.length){ $("disks").innerHTML=`<div class="empty">no filesystem data</div>`; return; }
+  let out="";
+  let inPool=false;
+  for(const f of fs){
+    if(f.pool_member && !inPool){ inPool=true; out+=`<div class="row tiny muted" style="margin-top:5px">pool members</div>`; }
+    out += `<div class="row"><span class="k">${esc(f.mount)}</span>${bar(f.percent)}
+            <span class="v tiny">${human(f.used)}/${human(f.size)} · ${f.percent.toFixed(0)}%</span></div>
+            <div class="row tiny muted" style="padding-top:0"><span class="k">${human(f.avail)} free</span><span class="v">${esc(f.fstype)}</span></div>`;
+  }
+  $("disks").innerHTML = out;
+}
+
+function renderMedia(d){
+  const m=d.media||{};
+  if(m.error){ $("media").innerHTML=`<div class="empty">${esc(m.error)}</div>`; return; }
+  let out="";
+  const p=m.plex, j=m.jellyfin;
+  if(p&&p.libraries){
+    out += `<div class="row tiny muted">plex${p.streams?` · ${p.streams} streaming`:""}</div>`;
+    for(const L of p.libraries) out += `<div class="row"><span class="k">${esc(L.title)}</span><span class="v">${L.count??"?"}</span></div>`;
+  }
+  if(j){
+    out += `<div class="row tiny muted" style="margin-top:5px">jellyfin${j.streams?` · ${j.streams} streaming`:""}</div>
+      <div class="row"><span class="k">Movies</span><span class="v">${j.movies}</span></div>
+      <div class="row"><span class="k">Series</span><span class="v">${j.series}</span></div>
+      <div class="row"><span class="k">Episodes</span><span class="v">${j.episodes}</span></div>`;
+  }
+  const r=m.radarr, s=m.sonarr;
+  if(r) out += `<div class="row tiny muted" style="margin-top:5px">radarr</div>
+    <div class="row"><span class="k">Movies</span><span class="v">${r.with_file}/${r.movies} <span class="muted">${human(r.size)}</span></span></div>
+    <div class="row"><span class="k">Missing</span><span class="v">${r.missing}</span></div>`;
+  if(s) out += `<div class="row tiny muted" style="margin-top:5px">sonarr</div>
+    <div class="row"><span class="k">Series</span><span class="v">${s.series}</span></div>
+    <div class="row"><span class="k">Episodes</span><span class="v">${s.episodes}/${s.episodes_total} <span class="muted">${human(s.size)}</span></span></div>
+    <div class="row"><span class="k">Missing</span><span class="v">${s.missing}</span></div>`;
+  const q=m.qbittorrent;
+  if(q && !q.error){
+    out += `<div class="row tiny muted" style="margin-top:5px">qbittorrent · ${esc(q.connection)}</div>
+      <div class="row"><span class="k">Torrents</span><span class="v">${q.torrents} <span class="muted">(${q.incomplete} active)</span></span></div>
+      <div class="row"><span class="k">Speed</span><span class="v">↓ ${human(q.dl_speed)}/s · ↑ ${human(q.up_speed)}/s</span></div>`;
+    for(const t of (q.active||[])){
+      out += `<div class="row tiny"><span class="k" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%">${esc(t.name)}</span>
+              <span class="v">${t.progress}% · ${human(t.dl)}/s · ${t.seeds}s</span></div>`;
+    }
+  } else if(q && q.error){
+    out += `<div class="row tiny"><span class="k stale">qbittorrent: ${esc(q.error).slice(0,60)}</span></div>`;
+  }
+  const pw=m.prowlarr;
+  if(pw) out += `<div class="row tiny muted" style="margin-top:5px">prowlarr</div>
+    <div class="row"><span class="k">Indexers</span><span class="v">${pw.enabled}/${pw.indexers} enabled${pw.failing.length?` · <span class="stale">${pw.failing.length} failing</span>`:""}</span></div>`;
+  $("media").innerHTML = out || `<div class="empty">no media data</div>`;
+}
+
+function renderServices(d){
+  const s=d.services||[], v=d.vpn||{};
+  let out="";
+  if(v && !v.error){
+    const bad = v.healthy!=="healthy" || !v.siblings_ok;
+    out += `<div class="row"><span class="dot ${bad?"f":""}"></span><span class="k">VPN exit</span>
+            <span class="v">${esc(v.ip||"?")} <span class="muted">${esc(v.country||"")}</span></span></div>
+            <div class="row tiny"><span class="k">gluetun</span><span class="v">${esc(v.healthy||"?")} · netns ${v.siblings_ok?"bound ✓":"<span class='stale'>BROKEN</span>"}</span></div>`;
+    const unbound=(v.siblings||[]).filter(x=>!x.bound);
+    for(const u of unbound) out += `<div class="row tiny"><span class="k stale">${esc(u.name)} not in gluetun netns</span></div>`;
+  }
+  out += `<div class="row tiny muted" style="margin-top:6px">endpoints</div>`;
+  for(const x of s){
+    out += `<div class="row"><span class="dot ${x.ok?"":"f"}"></span><span class="k">${esc(x.name)}</span>
+            <span class="v tiny">${x.code==null?"down":x.code} · ${x.ms}ms</span></div>`;
+  }
+  $("services").innerHTML = out;
+}
+
+function renderRoutine(d){
+  const r=d.daily_routine||{};
+  if(r.error){ $("routine").innerHTML=`<div class="empty">${esc(r.error)}</div>`; return; }
+  const c=r.counts||{};
+  $("routine-tag").textContent = r.ran_at? r.ran_at.replace("T"," ").slice(0,16) : "";
+  let out = `<div class="stat">
+      <div><div class="lbl">OK</div><div class="big" style="color:var(--ok)">${c.OK||0}</div></div>
+      <div><div class="lbl">Warn</div><div class="big" style="color:var(--warn)">${c.WARN||0}</div></div>
+      <div><div class="lbl">Fail</div><div class="big" style="color:var(--fail)">${c.FAIL||0}</div></div>
+      <div><div class="lbl">Skip</div><div class="big" style="color:var(--faint)">${c.SKIP||0}</div></div>
+    </div>
+    <div class="row tiny"><span class="k">last run</span><span class="v ${r.stale?"stale":""}">${r.age_hours}h ago</span></div>
+    <div class="row tiny"><span class="k">next run</span><span class="v">${esc(r.next_run||"03:00 daily")}</span></div>`;
+  const ents=(r.entries||[]);
+  if(ents.length){
+    out += `<div class="row tiny muted" style="margin-top:6px">findings</div>`;
+    for(const e of ents){
+      const k = e.kind==="FAIL"?"f":e.kind==="WARN"?"w":"i";
+      out += `<div class="row tiny" style="align-items:flex-start">
+                <span class="dot ${k}" style="margin-top:5px"></span>
+                <span class="k" style="white-space:normal">${esc(e.message).slice(0,150)}
+                  <span class="muted">— ${esc(e.section)}</span></span></div>`;
+    }
+  }
+  $("routine").innerHTML = out;
+}
+
+/* ── loop ───────────────────────────────────────────────────────────── */
+let lastGen = 0;
+
+// Full innerHTML re-renders reset scroll positions, so remember each panel's
+// scrollTop across a tick and put it back after the panels are rebuilt.
+function scrollSave(){
+  const s = {};
+  for(const el of document.querySelectorAll(".panel > .body")) s[el.id] = el.scrollTop;
+  return s;
+}
+function scrollRestore(s){
+  for(const el of document.querySelectorAll(".panel > .body"))
+    if(s[el.id] != null) el.scrollTop = s[el.id];
+}
+
+async function tick(){
+  try{
+    const res = await fetch("status.json?_="+Date.now(), {cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const d = await res.json();
+    lastGen = d.generated_epoch||0;
+
+    const h=d.host||{};
+    $("hostname").textContent = h.hostname||"host";
+    $("osline").textContent = [h.os,h.kernel].filter(Boolean).join(" · ");
+    $("uptime").textContent = h.uptime_seconds!=null? `up ${dur(h.uptime_seconds)}` : "";
+
+    const sc = scrollSave();
+    renderAttention(d); renderHost(d); renderThermal(d); renderDocker(d);
+    renderDisks(d); renderMedia(d); renderServices(d); renderRoutine(d);
+    scrollRestore(sc);
+    stampAge();
+  }catch(e){
+    $("stamp").innerHTML = `<span class="stale">collector unreachable — ${esc(e.message)}</span>`;
+  }
+}
+function stampAge(){
+  if(!lastGen) return;
+  const age = Date.now()/1000 - lastGen;
+  const s = age<90? `${Math.round(age)}s ago` : `${Math.round(age/60)}m ago`;
+  $("stamp").innerHTML = age>300
+    ? `<span class="stale">data ${s} — collector may be stopped</span>`
+    : `<span class="muted">updated ${s}</span>`;
+}
+tick();
+// Skip polling while the window is fully occluded — nothing observes the
+// result, and the collector's 60s timer keeps the data current anyway.
+setInterval(() => { if(!document.hidden) tick(); }, 30000);
+setInterval(() => { if(!document.hidden) stampAge(); }, 5000);
+// Catch up the moment the window becomes visible again.
+document.addEventListener("visibilitychange", () => { if(!document.hidden) tick(); });
+</script>
+</body>
+</html>

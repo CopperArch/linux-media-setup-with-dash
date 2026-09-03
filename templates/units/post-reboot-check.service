@@ -1,0 +1,7 @@
+[Unit]
+Description=Verify the whole stack came back after a reboot (one-shot)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/post-reboot-check.sh
+Nice=10

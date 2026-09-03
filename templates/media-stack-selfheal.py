@@ -5,6 +5,10 @@ auto-fixes the failure modes we've actually hit on this box. Called from
 daily-routine.sh at 3am (after the VPN has been rotated + containers restarted).
 
 Safe to run any time; every action is idempotent and logged. It will:
+  0. Verify gluetun's tunnel actually has a public IP (not just a "healthy"
+     Docker healthcheck, which only pings gluetun's own control server and
+     stays green through an AUTH_FAILED loop — see vpn_tunnel_health()).
+     Attempts one gluetun-rotate.sh cycle to recover, alerts if still down.
   1. Ensure the expected containers are running (start stopped ones).
   2. Reapply qBittorrent's desired queue/safety settings if they've drifted:
      dont_count_slow_torrents=true, max_active_downloads=20,
@@ -205,6 +209,7 @@ DEAD_NO_SEED_AGE_H = 3
 # that is otherwise entirely stalled (see pipeline_throughput).
 STALL_FLOOR_BPS = 512 * 1024
 NOW = time.time()
+GLUETUN_ROTATE = os.path.expanduser("~/.local/bin/gluetun-rotate.sh")
 
 # Host-side path to qBittorrent's save_path (container sees /data/media/downloads,
 # same mergerfs pool as {{MEDIA_POOL}} — see media-stack-cascade-storage notes).
@@ -281,6 +286,59 @@ def compose_up(compose_dir, services, timeout=300):
         return r.returncode == 0, (r.stderr or r.stdout).strip()[-400:]
     except Exception as e:
         return False, str(e)
+
+
+def vpn_tunnel_health():
+    """Verify gluetun's OpenVPN tunnel actually has a public IP.
+
+    Docker's healthcheck on gluetun only pings its own control server, so it
+    reports "healthy" even while OpenVPN is stuck retrying AUTH_FAILED
+    against a bad exit node — that hid a 5+ hour outage on 2026-09-03 where
+    every indexer and download silently died but the dashboard's only signal
+    was a downstream qBittorrent stall. This checks the tunnel directly, and
+    if it's down, tries the same soft-cycle gluetun-rotate.sh already does
+    hourly before giving up and alerting.
+    """
+    log("Gluetun VPN tunnel:")
+
+    def public_ip():
+        try:
+            r = subprocess.run(
+                ["docker", "exec", "gluetun", "wget", "-qO-", "--timeout=10",
+                 "https://api.ipify.org"],
+                capture_output=True, text=True, timeout=15)
+            ip = r.stdout.strip()
+            return ip if re.match(r"^\d+\.\d+\.\d+\.\d+$", ip) else ""
+        except Exception:
+            return ""
+
+    ip = public_ip()
+    if ip:
+        log(f"  [OK]   tunnel up, exit IP {ip}")
+        return True
+
+    log("  [FAIL] no public IP through the gluetun tunnel — VPN is down")
+    healed = False
+    if os.path.isfile(GLUETUN_ROTATE):
+        log("  [FIX ] attempting recovery via gluetun-rotate.sh")
+        try:
+            subprocess.run(["bash", GLUETUN_ROTATE], capture_output=True,
+                           text=True, timeout=200)
+        except Exception as e:
+            log(f"  [WARN] gluetun-rotate.sh failed to run: {e}")
+        healed = bool(public_ip())
+
+    if healed:
+        log("  [OK]   tunnel recovered after rotation")
+        return True
+
+    tail = docker("logs", "--tail", "15", "gluetun")
+    log("  [FAIL] tunnel still down after recovery attempt")
+    alert("gluetun VPN tunnel is DOWN — no public IP through the tunnel "
+          "(Prowlarr/qBittorrent/Sonarr/Radarr all cut off from the "
+          "internet). Auto-recovery via gluetun-rotate.sh did not bring it "
+          f"back; check 'docker logs gluetun'.\nLast log lines:\n{tail}")
+    return False
 
 
 def ensure_containers():
@@ -1674,6 +1732,7 @@ def heal_missing_radarr(missing):
 # ── main ─────────────────────────────────────────────────────────────────────
 def main():
     print("  --- media-stack self-heal ---", flush=True)
+    vpn_tunnel_health()
     ensure_containers()
     time.sleep(5)   # let anything just-started settle
 

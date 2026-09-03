@@ -95,6 +95,14 @@ Notes:
    units, re-applies gluetun iptables rules, verifies the docker log-cap
    policy, auto-updates the arr stack with verify+auto-rollback, and runs
    `media-stack-selfheal.py` (qBittorrent queue + dead-torrent recovery).
+   VPN IP rotation retries up to 3 restarts before giving up (a single bad
+   exit node used to leave the tunnel dead for hours), and both it and the
+   hourly `gluetun-rotate.sh` cron alert by email (`send-alert.py`, debounced
+   so a prolonged outage sends one mail, not one an hour) if the tunnel
+   won't come back — `media-stack-selfheal.py` also checks the tunnel
+   directly (`vpn_tunnel_health()`) rather than trusting gluetun's Docker
+   healthcheck, which stays "healthy" even when OpenVPN is stuck failing
+   auth in a loop.
 
 ## Repository layout
 

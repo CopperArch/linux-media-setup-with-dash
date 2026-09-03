@@ -6,10 +6,16 @@
 # their netns, forcing a --force-recreate of all of them.
 #
 # Installed 2026-07-29. Runs hourly from cron.
+# 2026-09-03: retries once more in-run if the first cycle fails (some exit
+# IPs reject auth outright), and alerts once via send-alert.py if the tunnel
+# is still down after that -- debounced with $DOWN_FLAG so a prolonged
+# outage sends one "down" mail and one "recovered" mail, not one every hour.
 set -uo pipefail
 
 KEY_FILE="${HOME}/.config/gluetun/rotate.key"
 LOG="${HOME}/.local/state/gluetun-rotate.log"
+DOWN_FLAG="${HOME}/.local/state/gluetun-vpn-down.flag"
+SEND_ALERT="${HOME}/.local/bin/send-alert.py"
 CTRL="http://127.0.0.1:8000"
 MAX_WAIT=150
 
@@ -49,23 +55,58 @@ docker ps --format '{{.Names}}' | grep -qx gluetun || { log "ERROR: gluetun not 
 OLD="$(ip_now)"
 log "rotating; current exit ${OLD:-unknown}"
 
-ctrl PUT /v1/openvpn/status '{"status":"stopped"}' >/dev/null
-sleep 3
-ctrl PUT /v1/openvpn/status '{"status":"running"}' >/dev/null
-
-# Wait for the tunnel to come back and hand us an address.
-for _ in $(seq 1 $((MAX_WAIT / 3))); do
+cycle() {
+  ctrl PUT /v1/openvpn/status '{"status":"stopped"}' >/dev/null
   sleep 3
-  NEW="$(ip_now)"
-  [ -n "$NEW" ] && break
-done
+  ctrl PUT /v1/openvpn/status '{"status":"running"}' >/dev/null
+  # Wait for the tunnel to come back and hand us an address.
+  for _ in $(seq 1 $((MAX_WAIT / 3))); do
+    sleep 3
+    NEW="$(ip_now)"
+    [ -n "$NEW" ] && return 0
+  done
+  return 1
+}
+
+NEW=""
+# The exit-IP pool draws from a handful of addresses and some reject auth
+# outright while others work fine -- a second cycle often lands on a
+# working one within the same hourly run instead of leaving the tunnel down
+# for up to an hour.
+if ! cycle; then
+  log "first cycle got no public IP, retrying once more"
+  cycle
+fi
 
 if [ -z "${NEW:-}" ]; then
-  log "ERROR: no public IP after ${MAX_WAIT}s - tunnel may be down"
+  log "ERROR: no public IP after retrying - tunnel may be down"
+  if [ ! -e "$DOWN_FLAG" ]; then
+    date -Is > "$DOWN_FLAG"
+    if [ -x "$SEND_ALERT" ]; then
+      TAIL="$(docker logs --tail 15 gluetun 2>&1)"
+      "$SEND_ALERT" "[homelab] gluetun VPN tunnel is down" \
+        "gluetun-rotate.sh could not get a public IP through the tunnel after two reconnect cycles. Prowlarr/qBittorrent/Sonarr/Radarr are cut off from the internet until this recovers.
+
+Last known good exit: ${OLD:-unknown}
+
+Last gluetun log lines:
+${TAIL}
+" >> "$LOG" 2>&1 || true
+    fi
+  fi
   exit 1
 fi
 
-if [ "$NEW" = "$OLD" ]; then
+if [ -e "$DOWN_FLAG" ]; then
+  DOWN_SINCE="$(cat "$DOWN_FLAG" 2>/dev/null || echo unknown)"
+  rm -f "$DOWN_FLAG"
+  if [ -x "$SEND_ALERT" ]; then
+    "$SEND_ALERT" "[homelab] gluetun VPN tunnel recovered" \
+      "Tunnel is back up, exit ${NEW}. Was down since ${DOWN_SINCE}.
+" >> "$LOG" 2>&1 || true
+  fi
+  log "tunnel recovered (was down since ${DOWN_SINCE}) -> ${NEW}"
+elif [ "$NEW" = "$OLD" ]; then
   log "reconnected but got the same exit ${NEW} (provider reassigned it)"
 else
   log "rotated ${OLD:-unknown} -> ${NEW}"

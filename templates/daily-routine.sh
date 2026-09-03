@@ -179,18 +179,46 @@ fi
 banner "VPN IP Rotation"
 OLD_VPN_IP=$(docker exec gluetun wget -qO- https://api.ipify.org 2>/dev/null | tr -d '[:space:]')
 log "  Rotating VPN exit IP (was ${OLD_VPN_IP:-unknown})"
-docker restart gluetun >/dev/null 2>&1
-for _ in $(seq 1 30); do
-    sleep 5
-    [[ "$(docker inspect -f '{{.State.Health.Status}}' gluetun 2>/dev/null)" == "healthy" ]] && break
+
+# 2026-09-03: a single restart used to leave the tunnel dead for hours when
+# it landed on a VPN exit node that rejects auth — the old code restarted
+# once, warned, and moved on. Retry a few full restarts (each redraws a
+# server) before giving up; this is the "auto heal" pass, gluetun-rotate.sh's
+# hourly cron is the fallback if even this exhausts its attempts.
+NEW_VPN_IP=""
+for attempt in 1 2 3; do
+    docker restart gluetun >/dev/null 2>&1
+    for _ in $(seq 1 30); do
+        sleep 5
+        [[ "$(docker inspect -f '{{.State.Health.Status}}' gluetun 2>/dev/null)" == "healthy" ]] && break
+    done
+    NEW_VPN_IP=$(docker exec gluetun wget -qO- --timeout=10 https://api.ipify.org 2>/dev/null | tr -d '[:space:]')
+    [[ -n "$NEW_VPN_IP" ]] && break
+    log "  [WARN] attempt $attempt: tunnel did not come up, retrying..."
 done
 docker restart prowlarr radarr sonarr qbittorrent flaresolverr jellyseerr chrome >/dev/null 2>&1
 sleep 10
-NEW_VPN_IP=$(docker exec gluetun wget -qO- https://api.ipify.org 2>/dev/null | tr -d '[:space:]')
+
 if [[ -n "$NEW_VPN_IP" ]]; then
-    log "  [OK]   VPN rotated: ${OLD_VPN_IP:-?} -> $NEW_VPN_IP"
+    if [[ "$attempt" -gt 1 ]]; then
+        log "  [OK]   VPN rotated: ${OLD_VPN_IP:-?} -> $NEW_VPN_IP (needed $attempt attempts)"
+    else
+        log "  [OK]   VPN rotated: ${OLD_VPN_IP:-?} -> $NEW_VPN_IP"
+    fi
 else
-    warn "  [FAIL] VPN did not return healthy after rotation — check 'docker logs gluetun'"
+    warn "  [FAIL] VPN did not come up after 3 restart attempts — check 'docker logs gluetun'"
+    if [[ -x "$ROOT/.local/bin/send-alert.py" ]]; then
+        GLUETUN_TAIL=$(docker logs --tail 15 gluetun 2>&1)
+        "$ROOT/.local/bin/send-alert.py" \
+            "[homelab] daily-routine: gluetun VPN would not reconnect" \
+            "daily-routine.sh's VPN IP rotation restarted gluetun 3 times and never got a public IP through the tunnel. Prowlarr/qBittorrent/Sonarr/Radarr are down until this recovers on its own (gluetun-rotate.sh retries hourly) or someone intervenes.
+
+Last known good exit: ${OLD_VPN_IP:-unknown}
+
+Last gluetun log lines:
+$GLUETUN_TAIL
+" >> "$LOG" 2>&1 || true
+    fi
 fi
 
 # ─── 3. Gluetun VPN + qBittorrent status ─────────────────────────────────────

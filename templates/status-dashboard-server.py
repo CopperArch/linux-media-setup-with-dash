@@ -361,8 +361,19 @@ def available_panes():
             continue
         if not shutil.which(needs):
             continue
-        price = format_price(pricing.get(price_key)) if price_key else None
-        out.append({"id": pid, "label": label, "group": group, "price": price})
+        entry = pricing.get(price_key) if price_key else None
+        price = format_price(entry)
+        # 2026-09-04: PANES' group is a static label, but ai-panes-check.py's
+        # FREE_KEYS loop already re-derives the real per-model "free" bool
+        # every night into model-pricing.json -- the static label here just
+        # never picked that up when a nominally-free model's tier expired.
+        # Let the live data override the label whenever it's actually known,
+        # so this self-corrects for any of the free-tier panes without
+        # another hardcoded fix later.
+        eff_group = group
+        if group in ("free", "paid") and entry is not None and "free" in entry:
+            eff_group = "free" if entry["free"] else "paid"
+        out.append({"id": pid, "label": label, "group": eff_group, "price": price})
     return out
 
 

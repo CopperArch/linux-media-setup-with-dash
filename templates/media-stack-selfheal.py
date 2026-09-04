@@ -140,8 +140,7 @@ MALWARE_FORMAT_SCORE = -10000
 # learns new ones from Prowlarr's own log, so a tracker that switches
 # Cloudflare on later is picked up without editing this.
 FLARESOLVERR_TAG = "flaresolverr"
-CLOUDFLARE_INDEXERS = {"EZTV", "LimeTorrents", "Torrent[CORE]", "Uindex",
-                       "Torrent Downloads"}
+CLOUDFLARE_INDEXERS = {"EZTV", "LimeTorrents", "Uindex", "Torrent Downloads"}
 
 # Backlog search. Neither *arr has a recurring missing-search task, so without
 # this a request whose release was already posted to the indexers before it was

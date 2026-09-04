@@ -989,14 +989,30 @@ def verify_indexers():
     # Live test of everything. Slow (each Cloudflare solve costs ~10-20s), but
     # this runs once a night and it is the only check that proves a tracker
     # will actually answer a query tonight.
-    try:
-        results = json.load(request(
-            "POST", f"{PROWLARR['url']}/api/v1/indexer/testall",
-            {"X-Api-Key": PROWLARR["key"], "Content-Type": "application/json"},
-            b"", timeout=600))
-    except Exception as e:
-        log(f"  [FAIL] indexer testall failed ({e})")
-        alert(f"Prowlarr indexer test sweep failed ({e})")
+    #
+    # 2026-09-04: this races daily-routine.sh's nightly VPN rotation, which
+    # restarts Prowlarr as one of gluetun's netns siblings shortly before this
+    # runs -- Prowlarr's API answers but its indexer subsystem isn't done
+    # re-initializing yet, and testall 400s. One retry after a short wait
+    # clears it.
+    results = None
+    last_err = None
+    for attempt in (1, 2):
+        try:
+            results = json.load(request(
+                "POST", f"{PROWLARR['url']}/api/v1/indexer/testall",
+                {"X-Api-Key": PROWLARR["key"], "Content-Type": "application/json"},
+                b"", timeout=600))
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 1:
+                log(f"  [WARN] indexer testall failed ({e}), retrying in 20s "
+                    f"(Prowlarr may still be settling after a restart)")
+                time.sleep(20)
+    if results is None:
+        log(f"  [FAIL] indexer testall failed twice ({last_err})")
+        alert(f"Prowlarr indexer test sweep failed twice ({last_err})")
         return
 
     by_id = {ix["id"]: (ix.get("name") or "").strip() for ix in indexers}

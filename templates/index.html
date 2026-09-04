@@ -362,6 +362,17 @@ const $ = id => document.getElementById(id);
     if(remember) localStorage.setItem("termWidth", String(w));
     for(const b of ctl.querySelectorAll("button"))
       b.classList.toggle("on", Number(b.dataset.w) === w);
+    // "off" means stop, not just hide. ¼/½/¾/full only resize the dock
+    // (iframe src untouched, session stays alive) — but going to 0 blanks
+    // the iframe, which drops ttyd's websocket and makes it hang up (SIGHUP)
+    // whatever is running in the pane: opencode agents, one-shot asks, or a
+    // plain shell. `loaded` guards against re-blanking on every resize event
+    // while already off, and marks the pane as needing a fresh boot next
+    // time it's opened.
+    if(w === 0 && loaded){
+      frame.src = "about:blank";
+      loaded = false;
+    }
     // Reflow the dashboard for whatever space is left.
     if(grid){
       const avail = window.innerWidth * (100 - w) / 100;

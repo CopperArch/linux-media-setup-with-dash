@@ -160,18 +160,18 @@ After=default.target
 # --check-origin refuses WebSocket upgrades whose Origin host differs from
 # the Host header — without it, any web page the user has open could drive
 # this shell from the browser (WebSockets are not CORS-governed).
-ExecStart=%h/.local/bin/ttyd \\\\
-  --port 7682 \\\\
-  --interface 127.0.0.1 \\\\
-  --writable \\\\
-  --check-origin \\\\
-  --url-arg \\\\
-  --max-clients 2 \\\\
-  --client-option fontSize=13 \\\\
-  --client-option 'theme={\\\"background\\\":\\\"#292c33\\\",\\\"foreground\\\":\\\"#ffffff\\\",\\\"cursor\\\":\\\"#ffffff\\\",\\\"cursorAccent\\\":\\\"#363a43\\\",\\\"selectionBackground\\\":\\\"#40444c\\\"}' \\\\
-  --client-option fontFamily='JetBrains Mono,DejaVu Sans Mono,monospace' \\\\
-  --client-option cursorBlink=true \\\\
-  --client-option titleFixed='Dashboard' \\\\
+ExecStart=%h/.local/bin/ttyd \\
+  --port 7682 \\
+  --interface 127.0.0.1 \\
+  --writable \\
+  --check-origin \\
+  --url-arg \\
+  --max-clients 2 \\
+  --client-option fontSize=13 \\
+  --client-option 'theme={\\\"background\\\":\\\"#292c33\\\",\\\"foreground\\\":\\\"#ffffff\\\",\\\"cursor\\\":\\\"#ffffff\\\",\\\"cursorAccent\\\":\\\"#363a43\\\",\\\"selectionBackground\\\":\\\"#40444c\\\"}' \\
+  --client-option fontFamily='JetBrains Mono,DejaVu Sans Mono,monospace' \\
+  --client-option cursorBlink=true \\
+  --client-option titleFixed='Dashboard' \\
   %h/.local/bin/dashboard-pane.sh
 Restart=always
 RestartSec=3
